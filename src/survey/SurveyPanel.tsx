@@ -12,7 +12,7 @@ import type { SelectedSegment } from '../map/types'
 interface Props {
   segment: SelectedSegment | null
   onDismiss: () => void
-  /** If true, submissions use mock mode (default true during development). */
+  /** If true, submissions use mock mode. Defaults to dev builds only. */
   mock?: boolean
   onSubmitted?: (result: SubmissionResult) => void
 }
@@ -20,7 +20,7 @@ interface Props {
 export default function SurveyPanel({
   segment,
   onDismiss,
-  mock = true,
+  mock = import.meta.env.DEV,
   onSubmitted,
 }: Props) {
   const [contact, setContact] = useContactStorage()
