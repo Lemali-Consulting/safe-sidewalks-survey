@@ -14,6 +14,7 @@ import {
   type NeighborhoodCollection,
   type NeighborhoodFeature,
 } from './neighborhoods'
+import { computeBlockCompletion, type BlockInput } from './geometry'
 
 interface Props {
   selectedId: string | null
@@ -21,10 +22,36 @@ interface Props {
   onExitDetail?: () => void
 }
 
-const blockStyle = (feature: any, selectedId: string | null) => {
-  const isSelected = selectedId && String(feature.properties.ID) === selectedId
-  if (isSelected) return { color: '#f97316', weight: 7, opacity: 1 }
-  return { color: '#0284c7', weight: 4, opacity: 0.9 }
+type SideStatus = { left: boolean; right: boolean }
+type CompletionMap = Map<string, SideStatus>
+
+const COLORS = {
+  notDone: '#0284c7',
+  partial: '#65a30d',
+  done: '#15803d',
+  selected: '#f97316',
+  submission: '#dc2626',
+} as const
+
+const blockKey = (props: any) => String(props?.ID ?? props?.OBJECTID ?? '')
+
+const blockStyle = (
+  feature: any,
+  selectedId: string | null,
+  completion: CompletionMap,
+) => {
+  const key = blockKey(feature.properties)
+  if (selectedId && key === selectedId) {
+    return { color: COLORS.selected, weight: 7, opacity: 1 }
+  }
+  const status = completion.get(key)
+  if (status?.left && status?.right) {
+    return { color: COLORS.done, weight: 5, opacity: 0.95 }
+  }
+  if (status?.left || status?.right) {
+    return { color: COLORS.partial, weight: 4, opacity: 0.9, dashArray: '6 4' }
+  }
+  return { color: COLORS.notDone, weight: 4, opacity: 0.9 }
 }
 
 /** Choropleth color ramp: light sky → deep sky based on normalized density. */
@@ -75,6 +102,92 @@ function buildMaskFeature(
   }
 }
 
+function LineSwatch({
+  color,
+  weight,
+  dashed,
+}: {
+  color: string
+  weight: number
+  dashed?: boolean
+}) {
+  return (
+    <svg width="22" height="10" aria-hidden>
+      <line
+        x1="1"
+        y1="5"
+        x2="21"
+        y2="5"
+        stroke={color}
+        strokeWidth={weight}
+        strokeLinecap="round"
+        strokeDasharray={dashed ? '4 3' : undefined}
+      />
+    </svg>
+  )
+}
+
+function DotSwatch({ color }: { color: string }) {
+  return (
+    <svg width="22" height="10" aria-hidden>
+      <circle cx="11" cy="5" r="3" fill={color} stroke="#fef08a" strokeWidth="1" />
+    </svg>
+  )
+}
+
+function Legend() {
+  const [open, setOpen] = useState(true)
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="pointer-events-auto rounded-full bg-white/95 px-3 py-1.5 text-[11px] font-semibold text-gray-800 shadow-lg backdrop-blur hover:bg-white"
+      >
+        Legend
+      </button>
+    )
+  }
+  const rows: Array<{ label: string; swatch: React.ReactNode }> = [
+    {
+      label: 'Not surveyed',
+      swatch: <LineSwatch color={COLORS.notDone} weight={4} />,
+    },
+    {
+      label: 'One side done',
+      swatch: <LineSwatch color={COLORS.partial} weight={4} dashed />,
+    },
+    {
+      label: 'Both sides done',
+      swatch: <LineSwatch color={COLORS.done} weight={5} />,
+    },
+    { label: 'Submission', swatch: <DotSwatch color={COLORS.submission} /> },
+  ]
+  return (
+    <div className="pointer-events-auto rounded-lg bg-white/95 px-3 py-2 text-[11px] text-gray-800 shadow-lg backdrop-blur">
+      <div className="mb-1 flex items-center justify-between gap-3">
+        <span className="font-semibold">Legend</span>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          aria-label="Hide legend"
+          className="text-gray-500 hover:text-gray-900"
+        >
+          ×
+        </button>
+      </div>
+      <ul className="space-y-1">
+        {rows.map((r) => (
+          <li key={r.label} className="flex items-center gap-2">
+            {r.swatch}
+            <span>{r.label}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
@@ -82,6 +195,7 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
   const detailLayerRef = useRef<any>(null)
   const surveyPointsLayerRef = useRef<any>(null)
   const maskLayerRef = useRef<L.GeoJSON | null>(null)
+  const completionRef = useRef<CompletionMap>(new Map())
 
   const [mode, setMode] = useState<'overview' | 'detail'>('overview')
   const [focusedHood, setFocusedHood] = useState<string | null>(null)
@@ -95,7 +209,9 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
   }, [onSelect])
   useEffect(() => {
     selectedIdRef.current = selectedId
-    detailLayerRef.current?.setStyle?.((f: any) => blockStyle(f, selectedId))
+    detailLayerRef.current?.setStyle?.((f: any) =>
+      blockStyle(f, selectedId, completionRef.current),
+    )
   }, [selectedId])
 
   // One-time map init.
@@ -196,13 +312,17 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
     const gjLayer = L.geoJSON(hoodFeature as unknown as GeoJSON.GeoJsonObject)
     map.fitBounds(gjLayer.getBounds(), { padding: [40, 40], maxZoom: 17 })
 
+    // Reset any completion state left over from the previous neighborhood.
+    completionRef.current = new Map()
+
     // Add a filtered block layer — only this neighborhood's segments.
     const blocks = EL.featureLayer({
       url: SIDEWALK_BLOCKS_URL,
       where: `Hood='${hood.replace(/'/g, "''")}'`,
       simplifyFactor: 0.35,
       precision: 5,
-      style: (feature: any) => blockStyle(feature, selectedIdRef.current),
+      style: (feature: any) =>
+        blockStyle(feature, selectedIdRef.current, completionRef.current),
     })
     blocks.on('click', (ev: any) => {
       const f = ev.layer?.feature
@@ -231,13 +351,62 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
       pointToLayer: (_feature: unknown, latlng: L.LatLng) =>
         L.circleMarker(latlng, {
           radius: 3,
-          fillColor: '#dc2626',
+          fillColor: COLORS.submission,
           color: '#fef08a',
           weight: 1,
           fillOpacity: 0.9,
         }),
     }).addTo(map)
     surveyPointsLayerRef.current = surveyPoints
+
+    // Wait for both layers to report loaded before computing completion.
+    // The `Assessed` flag upstream is stale, so we derive "done" from the
+    // spatial relationship between submission points and block polylines.
+    let blocksLoaded = false
+    let pointsLoaded = false
+    const recompute = () => {
+      if (!blocksLoaded || !pointsLoaded) return
+      const blockInputs: BlockInput[] = []
+      blocks.eachFeature((layer: any) => {
+        const f = layer.feature
+        if (!f?.geometry) return
+        const id = blockKey(f.properties)
+        if (!id) return
+        const lines: Array<Array<[number, number]>> = []
+        if (f.geometry.type === 'LineString') {
+          lines.push(f.geometry.coordinates as Array<[number, number]>)
+        } else if (f.geometry.type === 'MultiLineString') {
+          for (const line of f.geometry.coordinates) {
+            lines.push(line as Array<[number, number]>)
+          }
+        }
+        if (lines.length > 0) blockInputs.push({ id, lines })
+      })
+
+      const pts: Array<[number, number]> = []
+      surveyPoints.eachFeature((layer: any) => {
+        const f = layer.feature
+        const c = f?.geometry?.coordinates
+        if (Array.isArray(c) && c.length >= 2) pts.push([c[0], c[1]])
+      })
+
+      completionRef.current = computeBlockCompletion(blockInputs, pts, {
+        matchDistanceM: 15,
+        centerlineThresholdM: 1,
+        refLat: PITTSBURGH_CENTER[0],
+      })
+      blocks.setStyle?.((f: any) =>
+        blockStyle(f, selectedIdRef.current, completionRef.current),
+      )
+    }
+    blocks.on('load', () => {
+      blocksLoaded = true
+      recompute()
+    })
+    surveyPoints.on('load', () => {
+      pointsLoaded = true
+      recompute()
+    })
 
     setMode('detail')
     setFocusedHood(hood)
@@ -258,6 +427,7 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
       map.removeLayer(maskLayerRef.current)
       maskLayerRef.current = null
     }
+    completionRef.current = new Map()
     if (overviewLayerRef.current) overviewLayerRef.current.addTo(map)
     map.setView(PITTSBURGH_CENTER, PITTSBURGH_ZOOM)
     setMode('overview')
@@ -270,16 +440,21 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
       <div ref={containerRef} className="h-full w-full" />
 
       {mode === 'detail' && focusedHood && (
-        <div className="pointer-events-none absolute left-1/2 top-16 z-[400] flex -translate-x-1/2 flex-col items-center gap-2">
-          <button
-            type="button"
-            onClick={exitDetail}
-            className="pointer-events-auto flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-xs font-semibold text-gray-900 shadow-lg backdrop-blur hover:bg-white"
-          >
-            <span className="text-base">←</span>
-            <span>Back · {focusedHood}</span>
-          </button>
-        </div>
+        <>
+          <div className="pointer-events-none absolute left-1/2 top-16 z-[400] flex -translate-x-1/2 flex-col items-center gap-2">
+            <button
+              type="button"
+              onClick={exitDetail}
+              className="pointer-events-auto flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-xs font-semibold text-gray-900 shadow-lg backdrop-blur hover:bg-white"
+            >
+              <span className="text-base">←</span>
+              <span>Back · {focusedHood}</span>
+            </button>
+          </div>
+          <div className="absolute right-4 top-16 z-[400]">
+            <Legend />
+          </div>
+        </>
       )}
 
       {mode === 'overview' && !loadError && (
