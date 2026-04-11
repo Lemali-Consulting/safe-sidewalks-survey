@@ -14,7 +14,12 @@ import {
   type NeighborhoodCollection,
   type NeighborhoodFeature,
 } from './neighborhoods'
-import { computeBlockCompletion, type BlockInput } from './geometry'
+import {
+  computeBlockCompletion,
+  findNearestBlock,
+  pointInPolygon,
+  type BlockInput,
+} from './geometry'
 
 interface Props {
   selectedId: string | null
@@ -25,12 +30,20 @@ interface Props {
 type SideStatus = { left: boolean; right: boolean }
 type CompletionMap = Map<string, SideStatus>
 
+/** Minimal shape we rely on from an esri-leaflet feature layer child. The
+ *  package ships runtime-only types, so we describe just what we touch. */
+interface EsriFeatureLayer {
+  feature?: GeoJSON.Feature
+  getBounds?: () => L.LatLngBounds
+}
+
 const COLORS = {
   notDone: '#0284c7',
   partial: '#65a30d',
   done: '#15803d',
   selected: '#f97316',
   submission: '#dc2626',
+  userLocation: '#2563eb',
 } as const
 
 const blockKey = (props: any) => String(props?.ID ?? props?.OBJECTID ?? '')
@@ -196,10 +209,18 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
   const surveyPointsLayerRef = useRef<any>(null)
   const maskLayerRef = useRef<L.GeoJSON | null>(null)
   const completionRef = useRef<CompletionMap>(new Map())
+  const userMarkerRef = useRef<L.LayerGroup | null>(null)
+  const neighborhoodsRef = useRef<NeighborhoodCollection | null>(null)
+  /** Set when the user triggered "Find me" from overview mode — we hop into
+   * detail, then once blocks + completion are ready, auto-select the nearest
+   * unsurveyed block from this location. */
+  const pendingLocateRef = useRef<[number, number] | null>(null)
 
   const [mode, setMode] = useState<'overview' | 'detail'>('overview')
   const [focusedHood, setFocusedHood] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [locating, setLocating] = useState(false)
+  const [locateError, setLocateError] = useState<string | null>(null)
 
   // Latest-ref for selection, so Leaflet handlers always see the latest prop.
   const onSelectRef = useRef(onSelect)
@@ -255,6 +276,7 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
     fetchNeighborhoods()
       .then((collection) => {
         if (cancelled || mapRef.current !== map) return
+        neighborhoodsRef.current = collection
         addOverviewLayer(map, collection)
       })
       .catch((err) => {
@@ -271,6 +293,7 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
       detailLayerRef.current = null
       surveyPointsLayerRef.current = null
       maskLayerRef.current = null
+      userMarkerRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -398,6 +421,12 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
       blocks.setStyle?.((f: any) =>
         blockStyle(f, selectedIdRef.current, completionRef.current),
       )
+
+      const pending = pendingLocateRef.current
+      if (pending) {
+        pendingLocateRef.current = null
+        selectNearestUnsurveyed(pending, blockInputs, hood)
+      }
     }
     blocks.on('load', () => {
       blocksLoaded = true
@@ -410,6 +439,166 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
 
     setMode('detail')
     setFocusedHood(hood)
+  }
+
+  /** Collects currently-loaded blocks from the detail layer as plain geometry
+   *  inputs, so we can run findNearestBlock without touching Leaflet internals. */
+  function collectBlockInputs(): BlockInput[] {
+    const layer = detailLayerRef.current
+    if (!layer) return []
+    const out: BlockInput[] = []
+    layer.eachFeature((featLayer: EsriFeatureLayer) => {
+      const f = featLayer.feature
+      if (!f?.geometry) return
+      const id = blockKey(f.properties)
+      if (!id) return
+      const lines: Array<Array<[number, number]>> = []
+      if (f.geometry.type === 'LineString') {
+        lines.push(f.geometry.coordinates as Array<[number, number]>)
+      } else if (f.geometry.type === 'MultiLineString') {
+        for (const line of f.geometry.coordinates) {
+          lines.push(line as Array<[number, number]>)
+        }
+      }
+      if (lines.length > 0) out.push({ id, lines })
+    })
+    return out
+  }
+
+  function selectNearestUnsurveyed(
+    userLngLat: [number, number],
+    blockInputs: BlockInput[],
+    hood: string,
+  ) {
+    const map = mapRef.current
+    if (!map) return
+    const nearest = findNearestBlock(
+      userLngLat,
+      blockInputs,
+      completionRef.current,
+      PITTSBURGH_CENTER[0],
+    )
+    if (!nearest) {
+      setLocateError('No unsurveyed blocks left nearby — nice work!')
+      return
+    }
+
+    // Look up the matching feature in the Leaflet layer so we can pull its
+    // metadata and pan to its bounds.
+    const layer = detailLayerRef.current
+    let target: EsriFeatureLayer | null = null
+    layer?.eachFeature((featLayer: EsriFeatureLayer) => {
+      if (target) return
+      if (blockKey(featLayer.feature?.properties) === nearest.id) {
+        target = featLayer
+      }
+    })
+    if (!target) return
+    const hit: EsriFeatureLayer = target
+
+    const props = hit.feature?.properties ?? {}
+    onSelectRef.current({
+      objectId: Number(props.OBJECTID),
+      id: String(props.ID ?? props.OBJECTID),
+      streetName: props.Streetname ?? null,
+      neighborhood: props.Hood ?? hood,
+      district: props.District != null ? String(props.District) : null,
+      assessed: props.Assessed === 'Yes',
+      // Use the walker's live position as the submission point rather than
+      // an arbitrary midpoint on the polyline.
+      clickCoordinates: userLngLat,
+    })
+
+    try {
+      const b = hit.getBounds?.()
+      if (b?.isValid?.()) {
+        map.fitBounds(b, { padding: [60, 60], maxZoom: 18 })
+      }
+    } catch {
+      // Some layer types don't expose getBounds — fall back to the user point.
+      map.panTo([userLngLat[1], userLngLat[0]])
+    }
+  }
+
+  function setUserMarker(lng: number, lat: number) {
+    const map = mapRef.current
+    if (!map) return
+    if (userMarkerRef.current) {
+      map.removeLayer(userMarkerRef.current)
+      userMarkerRef.current = null
+    }
+    const group = L.layerGroup([
+      L.circleMarker([lat, lng], {
+        radius: 14,
+        fillColor: COLORS.userLocation,
+        color: COLORS.userLocation,
+        weight: 2,
+        fillOpacity: 0.15,
+        opacity: 0.3,
+        interactive: false,
+      }),
+      L.circleMarker([lat, lng], {
+        radius: 6,
+        fillColor: COLORS.userLocation,
+        color: '#ffffff',
+        weight: 2,
+        fillOpacity: 1,
+        interactive: false,
+      }),
+    ]).addTo(map)
+    userMarkerRef.current = group
+  }
+
+  function handleFindMe() {
+    if (!('geolocation' in navigator)) {
+      setLocateError('Geolocation is not available in this browser')
+      return
+    }
+    setLocateError(null)
+    setLocating(true)
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocating(false)
+        const lng = pos.coords.longitude
+        const lat = pos.coords.latitude
+        setUserMarker(lng, lat)
+
+        if (mode === 'detail') {
+          const map = mapRef.current
+          if (!map) return
+          const hood = focusedHood ?? ''
+          selectNearestUnsurveyed([lng, lat], collectBlockInputs(), hood)
+          return
+        }
+
+        // Overview mode: find the neighborhood containing the user.
+        const hoods = neighborhoodsRef.current
+        if (!hoods) {
+          setLocateError('Neighborhoods still loading — try again in a moment')
+          return
+        }
+        const hood = hoods.features.find((f) =>
+          pointInPolygon([lng, lat], f.geometry),
+        )
+        if (!hood) {
+          setLocateError("You're outside Pittsburgh's neighborhood boundaries")
+          return
+        }
+        pendingLocateRef.current = [lng, lat]
+        enterDetail(hood)
+      },
+      (err) => {
+        setLocating(false)
+        const message =
+          err.code === err.PERMISSION_DENIED
+            ? 'Location permission denied'
+            : err.code === err.POSITION_UNAVAILABLE
+              ? 'Location unavailable'
+              : 'Could not get your location'
+        setLocateError(message)
+      },
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 30_000 },
+    )
   }
 
   function exitDetail() {
@@ -428,6 +617,7 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
       maskLayerRef.current = null
     }
     completionRef.current = new Map()
+    pendingLocateRef.current = null
     if (overviewLayerRef.current) overviewLayerRef.current.addTo(map)
     map.setView(PITTSBURGH_CENTER, PITTSBURGH_ZOOM)
     setMode('overview')
@@ -457,9 +647,34 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
         </>
       )}
 
+      <button
+        type="button"
+        onClick={handleFindMe}
+        disabled={locating}
+        aria-label="Find my location and jump to the nearest unsurveyed block"
+        className="absolute bottom-4 right-4 z-[400] flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-xs font-semibold text-gray-900 shadow-lg backdrop-blur hover:bg-white disabled:cursor-wait disabled:opacity-60"
+      >
+        <span aria-hidden className="text-base leading-none">📍</span>
+        <span>{locating ? 'Locating…' : 'Find nearest block'}</span>
+      </button>
+
+      {locateError && (
+        <div className="pointer-events-auto absolute bottom-16 right-4 z-[400] flex max-w-[260px] items-start gap-2 rounded-lg bg-white px-3 py-2 text-[11px] font-medium text-rose-700 shadow-lg">
+          <span>{locateError}</span>
+          <button
+            type="button"
+            onClick={() => setLocateError(null)}
+            aria-label="Dismiss location error"
+            className="text-gray-400 hover:text-gray-900"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {mode === 'overview' && !loadError && (
-        <div className="pointer-events-none absolute bottom-4 left-1/2 z-[400] -translate-x-1/2 rounded-lg bg-white/90 px-4 py-2 text-xs font-semibold text-gray-700 shadow-lg">
-          Tap a neighborhood to start assessing
+        <div className="pointer-events-none absolute bottom-16 left-1/2 z-[400] -translate-x-1/2 rounded-lg bg-white/90 px-4 py-2 text-xs font-semibold text-gray-700 shadow-lg">
+          Tap a neighborhood, or use “Find nearest block”
         </div>
       )}
 

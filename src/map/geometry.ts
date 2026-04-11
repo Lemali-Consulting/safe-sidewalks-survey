@@ -91,6 +91,82 @@ export function nearestOnLineString(
   return best
 }
 
+export interface NearestBlockResult {
+  id: string
+  /** Distance in meters from the query point to the block polyline. */
+  distance: number
+}
+
+/** Finds the geometrically closest block to a [lng, lat] query point, skipping
+ * any block already marked fully surveyed (both sides done). Partially-done
+ * blocks are still candidates, matching the proposal: finish partials first. */
+export function findNearestBlock(
+  queryLngLat: [number, number],
+  blocks: BlockInput[],
+  completion: Map<string, { left: boolean; right: boolean }>,
+  refLat: number,
+): NearestBlockResult | null {
+  if (blocks.length === 0) return null
+  const p = toLocalMeters(queryLngLat[0], queryLngLat[1], refLat)
+  let best: NearestBlockResult | null = null
+  for (const block of blocks) {
+    const status = completion.get(block.id)
+    if (status?.left && status?.right) continue
+    for (const line of block.lines) {
+      const coords = line.map(([lng, lat]) => toLocalMeters(lng, lat, refLat))
+      const r = nearestOnLineString(p, coords)
+      if (!r) continue
+      if (!best || r.distance < best.distance) {
+        best = { id: block.id, distance: r.distance }
+      }
+    }
+  }
+  return best
+}
+
+/** Ray-casting point-in-polygon for GeoJSON Polygon and MultiPolygon geometries
+ * in lon/lat space. Handles holes via even-odd containment. */
+export function pointInPolygon(
+  point: [number, number],
+  geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon,
+): boolean {
+  if (geometry.type === 'Polygon') {
+    return polygonContains(point, geometry.coordinates)
+  }
+  for (const poly of geometry.coordinates) {
+    if (polygonContains(point, poly)) return true
+  }
+  return false
+}
+
+function polygonContains(
+  point: [number, number],
+  rings: GeoJSON.Position[][],
+): boolean {
+  if (rings.length === 0) return false
+  if (!ringContains(point, rings[0])) return false
+  for (let i = 1; i < rings.length; i++) {
+    if (ringContains(point, rings[i])) return false
+  }
+  return true
+}
+
+function ringContains(point: [number, number], ring: GeoJSON.Position[]): boolean {
+  const [x, y] = point
+  let inside = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0]
+    const yi = ring[i][1]
+    const xj = ring[j][0]
+    const yj = ring[j][1]
+    const intersect =
+      yi > y !== yj > y &&
+      x < ((xj - xi) * (y - yi)) / (yj - yi) + xi
+    if (intersect) inside = !inside
+  }
+  return inside
+}
+
 export function computeBlockCompletion(
   blocks: BlockInput[],
   points: Array<[number, number]>,

@@ -4,6 +4,8 @@ import {
   nearestPointOnSegment,
   nearestOnLineString,
   computeBlockCompletion,
+  findNearestBlock,
+  pointInPolygon,
   type BlockInput,
   type CompletionOptions,
 } from './geometry'
@@ -141,5 +143,181 @@ describe('computeBlockCompletion', () => {
     )
     expect(status.has('A')).toBe(false)
     expect(status.get('B')).toBeDefined()
+  })
+})
+
+describe('findNearestBlock', () => {
+  const north: BlockInput = {
+    id: 'north',
+    lines: [
+      [
+        [-80, 40.441],
+        [-80, 40.442],
+      ],
+    ],
+  }
+  const south: BlockInput = {
+    id: 'south',
+    lines: [
+      [
+        [-80, 40.439],
+        [-80, 40.44],
+      ],
+    ],
+  }
+  const far: BlockInput = {
+    id: 'far',
+    lines: [
+      [
+        [-79.99, 40.45],
+        [-79.99, 40.451],
+      ],
+    ],
+  }
+
+  it('returns the geometrically closest block when completion is empty', () => {
+    const result = findNearestBlock(
+      [-80, 40.4395],
+      [north, south, far],
+      new Map(),
+      40.44,
+    )
+    expect(result?.id).toBe('south')
+  })
+
+  it('skips blocks that are fully surveyed on both sides', () => {
+    const completion = new Map([
+      ['south', { left: true, right: true }],
+    ])
+    const result = findNearestBlock(
+      [-80, 40.4395],
+      [north, south, far],
+      completion,
+      40.44,
+    )
+    expect(result?.id).toBe('north')
+  })
+
+  it('still picks partially-surveyed blocks (only one side done)', () => {
+    const completion = new Map([
+      ['south', { left: true, right: false }],
+    ])
+    const result = findNearestBlock(
+      [-80, 40.4395],
+      [north, south, far],
+      completion,
+      40.44,
+    )
+    expect(result?.id).toBe('south')
+  })
+
+  it('returns null when the block list is empty', () => {
+    expect(
+      findNearestBlock([-80, 40.44], [], new Map(), 40.44),
+    ).toBeNull()
+  })
+
+  it('returns null when every block is fully surveyed', () => {
+    const completion = new Map([
+      ['north', { left: true, right: true }],
+      ['south', { left: true, right: true }],
+      ['far', { left: true, right: true }],
+    ])
+    expect(
+      findNearestBlock(
+        [-80, 40.4395],
+        [north, south, far],
+        completion,
+        40.44,
+      ),
+    ).toBeNull()
+  })
+
+  it('reports the distance to the chosen block in meters', () => {
+    // Query point is ~11.1 m south of the south block's southern end.
+    const result = findNearestBlock(
+      [-80, 40.4389],
+      [south],
+      new Map(),
+      40.44,
+    )
+    expect(result).not.toBeNull()
+    expect(result!.distance).toBeCloseTo(11.1, 0)
+  })
+})
+
+describe('pointInPolygon', () => {
+  const square: GeoJSON.Polygon = {
+    type: 'Polygon',
+    coordinates: [
+      [
+        [0, 0],
+        [10, 0],
+        [10, 10],
+        [0, 10],
+        [0, 0],
+      ],
+    ],
+  }
+
+  it('returns true for a point strictly inside', () => {
+    expect(pointInPolygon([5, 5], square)).toBe(true)
+  })
+
+  it('returns false for a point outside', () => {
+    expect(pointInPolygon([15, 5], square)).toBe(false)
+  })
+
+  it('handles MultiPolygon: inside either sub-polygon counts', () => {
+    const mp: GeoJSON.MultiPolygon = {
+      type: 'MultiPolygon',
+      coordinates: [
+        [
+          [
+            [0, 0],
+            [1, 0],
+            [1, 1],
+            [0, 1],
+            [0, 0],
+          ],
+        ],
+        [
+          [
+            [10, 10],
+            [11, 10],
+            [11, 11],
+            [10, 11],
+            [10, 10],
+          ],
+        ],
+      ],
+    }
+    expect(pointInPolygon([0.5, 0.5], mp)).toBe(true)
+    expect(pointInPolygon([10.5, 10.5], mp)).toBe(true)
+    expect(pointInPolygon([5, 5], mp)).toBe(false)
+  })
+
+  it('respects polygon holes', () => {
+    const withHole: GeoJSON.Polygon = {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [0, 0],
+          [10, 0],
+          [10, 10],
+          [0, 10],
+          [0, 0],
+        ],
+        [
+          [4, 4],
+          [6, 4],
+          [6, 6],
+          [4, 6],
+          [4, 4],
+        ],
+      ],
+    }
+    expect(pointInPolygon([5, 5], withHole)).toBe(false)
+    expect(pointInPolygon([1, 1], withHole)).toBe(true)
   })
 })
