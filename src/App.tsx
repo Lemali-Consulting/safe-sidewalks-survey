@@ -7,6 +7,7 @@ import type { SubmissionResult } from './survey/submission'
 export default function App() {
   const [segment, setSegment] = useState<SelectedSegment | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [findNearestTick, setFindNearestTick] = useState(0)
 
   function handleSelect(next: SelectedSegment) {
     setSegment(next)
@@ -18,6 +19,12 @@ export default function App() {
       // eslint-disable-next-line no-console
       console.log('[better-survey] submit result', result)
     }
+  }
+
+  function handleFindNext() {
+    setSegment(null)
+    setSheetOpen(false)
+    setFindNearestTick((n) => n + 1)
   }
 
   return (
@@ -42,6 +49,7 @@ export default function App() {
             setSegment(null)
             setSheetOpen(false)
           }}
+          findNearestTick={findNearestTick}
         />
       </main>
 
@@ -51,6 +59,7 @@ export default function App() {
           segment={segment}
           onDismiss={() => setSegment(null)}
           onSubmitted={handleSubmitted}
+          onFindNext={handleFindNext}
         />
       </aside>
 
@@ -69,6 +78,7 @@ export default function App() {
             setSegment(null)
           }}
           onSubmitted={handleSubmitted}
+          onFindNext={handleFindNext}
         />
       </div>
     </div>

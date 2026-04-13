@@ -15,6 +15,8 @@ interface Props {
   /** If true, submissions use mock mode. Defaults to dev builds only. */
   mock?: boolean
   onSubmitted?: (result: SubmissionResult) => void
+  /** Called from the post-submit success screen to jump to the next block. */
+  onFindNext?: () => void
 }
 
 export default function SurveyPanel({
@@ -22,6 +24,7 @@ export default function SurveyPanel({
   onDismiss,
   mock = import.meta.env.DEV,
   onSubmitted,
+  onFindNext,
 }: Props) {
   const [contact, setContact] = useContactStorage()
   const [answers, setAnswers] = useState<Answers>({})
@@ -90,25 +93,42 @@ export default function SurveyPanel({
     )
   }
 
-  // If the mock submit reported success, show a confirmation screen.
-  if (status?.ok && status.mocked) {
+  // On success (mock or live), show a confirmation screen with a next-block CTA.
+  if (status?.ok) {
+    const isMock = status.mocked
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-        <div className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
-          MOCK SUBMIT
-        </div>
-        <h2 className="text-lg font-semibold text-gray-900">Would have submitted ✓</h2>
+        {isMock && (
+          <div className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+            MOCK SUBMIT
+          </div>
+        )}
+        <h2 className="text-lg font-semibold text-gray-900">
+          {isMock ? 'Would have submitted ✓' : 'Submitted ✓'}
+        </h2>
         <p className="text-sm text-gray-600">
-          Dev mode — no data was sent to ArcGIS. Check the browser console for the
-          recorded payload.
+          {isMock
+            ? 'Dev mode — no data was sent to ArcGIS. Check the browser console for the recorded payload.'
+            : 'Thanks! Your assessment has been recorded.'}
         </p>
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="mt-2 rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500"
-        >
-          Pick another segment
-        </button>
+        <div className="mt-2 flex w-full max-w-[260px] flex-col gap-2">
+          {onFindNext && (
+            <button
+              type="button"
+              onClick={onFindNext}
+              className="rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500"
+            >
+              📍 Find next block
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+          >
+            Back to map
+          </button>
+        </div>
       </div>
     )
   }

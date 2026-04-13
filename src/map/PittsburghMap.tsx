@@ -25,6 +25,8 @@ interface Props {
   selectedId: string | null
   onSelect: (segment: SelectedSegment) => void
   onExitDetail?: () => void
+  /** Increment to externally trigger the "find nearest unsurveyed block" flow. */
+  findNearestTick?: number
 }
 
 type SideStatus = { left: boolean; right: boolean }
@@ -201,7 +203,7 @@ function Legend() {
   )
 }
 
-export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Props) {
+export default function PittsburghMap({ selectedId, onSelect, onExitDetail, findNearestTick }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
   const overviewLayerRef = useRef<L.GeoJSON | null>(null)
@@ -548,6 +550,19 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail }: Pr
     ]).addTo(map)
     userMarkerRef.current = group
   }
+
+  const handleFindMeRef = useRef<() => void>(() => {})
+
+  // Let the parent trigger the "find nearest unsurveyed block" flow by
+  // incrementing findNearestTick (e.g. from the post-submit success screen).
+  useEffect(() => {
+    handleFindMeRef.current = handleFindMe
+  })
+
+  useEffect(() => {
+    if (findNearestTick === undefined || findNearestTick === 0) return
+    handleFindMeRef.current()
+  }, [findNearestTick])
 
   function handleFindMe() {
     if (!('geolocation' in navigator)) {
