@@ -210,6 +210,7 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
   const detailLayerRef = useRef<any>(null)
   const surveyPointsLayerRef = useRef<any>(null)
   const maskLayerRef = useRef<L.GeoJSON | null>(null)
+  const hitLayersRef = useRef<L.Polyline[]>([])
   const completionRef = useRef<CompletionMap>(new Map())
   const userMarkerRef = useRef<L.LayerGroup | null>(null)
   const neighborhoodsRef = useRef<NeighborhoodCollection | null>(null)
@@ -267,6 +268,13 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
       maskPane.style.zIndex = '350'
       maskPane.style.pointerEvents = 'none'
     }
+
+    // Pane for invisible wide "hit" polylines that expand tap targets on touch
+    // devices. Sits just under the overlay pane so it catches clicks without
+    // covering submission dots (which live in the default overlay at 400).
+    map.createPane('hit')
+    const hitPane = map.getPane('hit')
+    if (hitPane) hitPane.style.zIndex = '390'
 
     // Submission dots are created on-demand in enterDetail, filtered to the
     // focused neighborhood — that way they never spill outside the hood's
@@ -349,11 +357,9 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
       style: (feature: any) =>
         blockStyle(feature, selectedIdRef.current, completionRef.current),
     })
-    blocks.on('click', (ev: any) => {
-      const f = ev.layer?.feature
+    const selectFromFeature = (f: GeoJSON.Feature | undefined, latlng: L.LatLng) => {
       if (!f) return
-      const props = f.properties ?? {}
-      const latlng: L.LatLng = ev.latlng
+      const props: any = f.properties ?? {}
       onSelectRef.current({
         objectId: Number(props.OBJECTID),
         id: String(props.ID ?? props.OBJECTID),
@@ -363,6 +369,30 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
         assessed: props.Assessed === 'Yes',
         clickCoordinates: [latlng.lng, latlng.lat],
       })
+    }
+    blocks.on('click', (ev: any) => {
+      selectFromFeature(ev.layer?.feature, ev.latlng)
+    })
+
+    // Mirror each rendered block with a wide transparent polyline so tap
+    // targets are finger-friendly on mobile. These sit in the 'hit' pane
+    // (z-index 390) just under the overlay so they don't cover submission dots.
+    blocks.on('createfeature', (ev: any) => {
+      const featLayer = ev.layer
+      const feat: GeoJSON.Feature | undefined = featLayer?.feature
+      const latlngs = featLayer?.getLatLngs?.()
+      if (!feat || !latlngs) return
+      const hit = L.polyline(latlngs, {
+        pane: 'hit',
+        opacity: 0,
+        weight: 24,
+        interactive: true,
+        bubblingMouseEvents: false,
+      }).addTo(map)
+      hit.on('click', (e: L.LeafletMouseEvent) => {
+        selectFromFeature(feat, e.latlng)
+      })
+      hitLayersRef.current.push(hit)
     })
     blocks.addTo(map)
     detailLayerRef.current = blocks
@@ -623,6 +653,8 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
       map.removeLayer(detailLayerRef.current)
       detailLayerRef.current = null
     }
+    for (const hit of hitLayersRef.current) map.removeLayer(hit)
+    hitLayersRef.current = []
     if (surveyPointsLayerRef.current) {
       map.removeLayer(surveyPointsLayerRef.current)
       surveyPointsLayerRef.current = null
