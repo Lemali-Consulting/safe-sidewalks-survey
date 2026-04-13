@@ -27,6 +27,8 @@ interface Props {
   onExitDetail?: () => void
   /** Increment to externally trigger the "find nearest unsurveyed block" flow. */
   findNearestTick?: number
+  /** Block IDs the current user submitted on this device (from localStorage). */
+  myBlocks?: Set<string>
 }
 
 type SideStatus = { left: boolean; right: boolean }
@@ -46,7 +48,10 @@ const COLORS = {
   selected: '#f97316',
   submission: '#dc2626',
   userLocation: '#2563eb',
+  mine: '#a855f7',
 } as const
+
+const EMPTY_SET: Set<string> = new Set()
 
 const blockKey = (props: any) => String(props?.ID ?? props?.OBJECTID ?? '')
 
@@ -54,10 +59,14 @@ const blockStyle = (
   feature: any,
   selectedId: string | null,
   completion: CompletionMap,
+  myBlocks: Set<string>,
 ) => {
   const key = blockKey(feature.properties)
   if (selectedId && key === selectedId) {
     return { color: COLORS.selected, weight: 7, opacity: 1 }
+  }
+  if (myBlocks.has(key)) {
+    return { color: COLORS.mine, weight: 6, opacity: 1, dashArray: '2 5' }
   }
   const status = completion.get(key)
   if (status?.left && status?.right) {
@@ -177,6 +186,10 @@ function Legend() {
       swatch: <LineSwatch color={COLORS.done} weight={5} />,
     },
     { label: 'Submission', swatch: <DotSwatch color={COLORS.submission} /> },
+    {
+      label: 'Your submissions',
+      swatch: <LineSwatch color={COLORS.mine} weight={6} dashed />,
+    },
   ]
   return (
     <div className="pointer-events-auto rounded-lg bg-white/95 px-3 py-2 text-[11px] text-gray-800 shadow-lg backdrop-blur">
@@ -203,7 +216,7 @@ function Legend() {
   )
 }
 
-export default function PittsburghMap({ selectedId, onSelect, onExitDetail, findNearestTick }: Props) {
+export default function PittsburghMap({ selectedId, onSelect, onExitDetail, findNearestTick, myBlocks }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
   const overviewLayerRef = useRef<L.GeoJSON | null>(null)
@@ -228,15 +241,22 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
   // Latest-ref for selection, so Leaflet handlers always see the latest prop.
   const onSelectRef = useRef(onSelect)
   const selectedIdRef = useRef<string | null>(selectedId)
+  const myBlocksRef = useRef<Set<string>>(myBlocks ?? EMPTY_SET)
   useEffect(() => {
     onSelectRef.current = onSelect
   }, [onSelect])
   useEffect(() => {
     selectedIdRef.current = selectedId
     detailLayerRef.current?.setStyle?.((f: any) =>
-      blockStyle(f, selectedId, completionRef.current),
+      blockStyle(f, selectedId, completionRef.current, myBlocksRef.current),
     )
   }, [selectedId])
+  useEffect(() => {
+    myBlocksRef.current = myBlocks ?? EMPTY_SET
+    detailLayerRef.current?.setStyle?.((f: any) =>
+      blockStyle(f, selectedIdRef.current, completionRef.current, myBlocksRef.current),
+    )
+  }, [myBlocks])
 
   // One-time map init.
   useEffect(() => {
@@ -355,7 +375,7 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
       simplifyFactor: 0.35,
       precision: 5,
       style: (feature: any) =>
-        blockStyle(feature, selectedIdRef.current, completionRef.current),
+        blockStyle(feature, selectedIdRef.current, completionRef.current, myBlocksRef.current),
     })
     const selectFromFeature = (f: GeoJSON.Feature | undefined, latlng: L.LatLng) => {
       if (!f) return
@@ -451,7 +471,7 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
         refLat: PITTSBURGH_CENTER[0],
       })
       blocks.setStyle?.((f: any) =>
-        blockStyle(f, selectedIdRef.current, completionRef.current),
+        blockStyle(f, selectedIdRef.current, completionRef.current, myBlocksRef.current),
       )
 
       const pending = pendingLocateRef.current

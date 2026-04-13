@@ -3,11 +3,13 @@ import PittsburghMap from './map/PittsburghMap'
 import SurveyPanel from './survey/SurveyPanel'
 import type { SelectedSegment } from './map/types'
 import type { SubmissionResult } from './survey/submission'
+import { useMyBlocksStorage } from './survey/useMyBlocksStorage'
 
 export default function App() {
   const [segment, setSegment] = useState<SelectedSegment | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [findNearestTick, setFindNearestTick] = useState(0)
+  const [myBlocks, addMyBlock] = useMyBlocksStorage()
 
   function handleSelect(next: SelectedSegment) {
     setSegment(next)
@@ -16,6 +18,7 @@ export default function App() {
 
   function handleSubmitted(result: SubmissionResult) {
     if (result.ok) {
+      if (segment?.id) addMyBlock(segment.id)
       // eslint-disable-next-line no-console
       console.log('[better-survey] submit result', result)
     }
@@ -50,6 +53,7 @@ export default function App() {
             setSheetOpen(false)
           }}
           findNearestTick={findNearestTick}
+          myBlocks={myBlocks}
         />
       </main>
 
