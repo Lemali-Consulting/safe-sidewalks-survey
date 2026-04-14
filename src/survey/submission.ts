@@ -25,6 +25,9 @@ export interface SubmissionResult {
   objectId?: number
   globalId?: string
   error?: string
+  photoError?: string
+  photosUploaded?: number
+  photosTotal?: number
   mocked?: boolean
   mockedRequest?: { url: string; body: string; photoCount: number }
 }
@@ -116,26 +119,42 @@ export async function submitSurvey(
   }
 
   const objectId = addResult.objectId!
+  const photosTotal = input.photos.length
+  let photosUploaded = 0
+  let photoError: string | undefined
+
   for (const photo of input.photos) {
-    const form = new FormData()
-    form.set('f', 'json')
-    form.set('attachment', photo, photo.name)
-    const attResp = await fetch(`${FEATURE_SERVICE}/${objectId}/addAttachment`, {
-      method: 'POST',
-      body: form,
-    })
-    const attJson = (await attResp.json()) as {
-      addAttachmentResult?: { success: boolean; error?: { description?: string } }
-    }
-    if (!attJson.addAttachmentResult?.success) {
-      return {
-        ok: false,
-        objectId,
-        error:
-          attJson.addAttachmentResult?.error?.description ?? 'addAttachment failed',
+    try {
+      const form = new FormData()
+      form.set('f', 'json')
+      form.set('attachment', photo, photo.name)
+      const attResp = await fetch(`${FEATURE_SERVICE}/${objectId}/addAttachment`, {
+        method: 'POST',
+        body: form,
+      })
+      const attJson = (await attResp.json()) as {
+        addAttachmentResult?: { success: boolean; error?: { description?: string } }
       }
+      if (!attJson.addAttachmentResult?.success) {
+        photoError =
+          attJson.addAttachmentResult?.error?.description ?? 'addAttachment failed'
+        break
+      }
+      photosUploaded++
+    } catch (err) {
+      photoError = err instanceof Error ? err.message : 'addAttachment network error'
+      break
     }
   }
 
-  return { ok: true, objectId, globalId: addResult.globalId }
+  // The feature record is already saved. Attachment failures are a partial
+  // success — surface them as a warning, not a hard failure.
+  return {
+    ok: true,
+    objectId,
+    globalId: addResult.globalId,
+    photosUploaded,
+    photosTotal,
+    photoError,
+  }
 }

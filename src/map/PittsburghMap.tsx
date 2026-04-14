@@ -55,27 +55,34 @@ const EMPTY_SET: Set<string> = new Set()
 
 const blockKey = (props: any) => String(props?.ID ?? props?.OBJECTID ?? '')
 
+// At high zooms the underlying blocks are tiny on screen but fingers aren't,
+// so thicken the visible stroke alongside the (already-wide) invisible hit
+// polyline. Baseline zoom 17 → 1x, each extra level adds +1.5px.
+const zoomWeightBoost = (zoom: number) => Math.max(0, (zoom - 17) * 1.5)
+
 const blockStyle = (
   feature: any,
   selectedId: string | null,
   completion: CompletionMap,
   myBlocks: Set<string>,
+  zoom: number,
 ) => {
+  const boost = zoomWeightBoost(zoom)
   const key = blockKey(feature.properties)
   if (selectedId && key === selectedId) {
-    return { color: COLORS.selected, weight: 7, opacity: 1 }
+    return { color: COLORS.selected, weight: 7 + boost, opacity: 1 }
   }
   if (myBlocks.has(key)) {
-    return { color: COLORS.mine, weight: 6, opacity: 1, dashArray: '2 5' }
+    return { color: COLORS.mine, weight: 6 + boost, opacity: 1, dashArray: '2 5' }
   }
   const status = completion.get(key)
   if (status?.left && status?.right) {
-    return { color: COLORS.done, weight: 5, opacity: 0.95 }
+    return { color: COLORS.done, weight: 5 + boost, opacity: 0.95 }
   }
   if (status?.left || status?.right) {
-    return { color: COLORS.partial, weight: 4, opacity: 0.9, dashArray: '6 4' }
+    return { color: COLORS.partial, weight: 4 + boost, opacity: 0.9, dashArray: '6 4' }
   }
-  return { color: COLORS.notDone, weight: 4, opacity: 0.9 }
+  return { color: COLORS.notDone, weight: 4 + boost, opacity: 0.9 }
 }
 
 /** Choropleth color ramp: light sky → deep sky based on normalized density. */
@@ -247,14 +254,16 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
   }, [onSelect])
   useEffect(() => {
     selectedIdRef.current = selectedId
+    const z = mapRef.current?.getZoom() ?? 17
     detailLayerRef.current?.setStyle?.((f: any) =>
-      blockStyle(f, selectedId, completionRef.current, myBlocksRef.current),
+      blockStyle(f, selectedId, completionRef.current, myBlocksRef.current, z),
     )
   }, [selectedId])
   useEffect(() => {
     myBlocksRef.current = myBlocks ?? EMPTY_SET
+    const z = mapRef.current?.getZoom() ?? 17
     detailLayerRef.current?.setStyle?.((f: any) =>
-      blockStyle(f, selectedIdRef.current, completionRef.current, myBlocksRef.current),
+      blockStyle(f, selectedIdRef.current, completionRef.current, myBlocksRef.current, z),
     )
   }, [myBlocks])
 
@@ -266,7 +275,7 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
       center: PITTSBURGH_CENTER,
       zoom: PITTSBURGH_ZOOM,
       minZoom: 11,
-      maxZoom: 19,
+      maxZoom: 21,
       zoomControl: false,
       // Canvas was for the 30k-polyline case; now that sidewalks load one
       // neighborhood at a time (a few hundred at most), SVG is plenty.
@@ -277,7 +286,8 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap contributors',
-      maxZoom: 19,
+      maxZoom: 21,
+      maxNativeZoom: 19,
     }).addTo(map)
 
     // Dedicated pane for the "everything-outside-the-focused-hood" mask,
@@ -375,7 +385,13 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
       simplifyFactor: 0.35,
       precision: 5,
       style: (feature: any) =>
-        blockStyle(feature, selectedIdRef.current, completionRef.current, myBlocksRef.current),
+        blockStyle(
+          feature,
+          selectedIdRef.current,
+          completionRef.current,
+          myBlocksRef.current,
+          map.getZoom(),
+        ),
     })
     const selectFromFeature = (f: GeoJSON.Feature | undefined, latlng: L.LatLng) => {
       if (!f) return
@@ -405,7 +421,7 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
       const hit = L.polyline(latlngs, {
         pane: 'hit',
         opacity: 0,
-        weight: 24,
+        weight: 44,
         interactive: true,
         bubblingMouseEvents: false,
       }).addTo(map)
@@ -416,6 +432,19 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
     })
     blocks.addTo(map)
     detailLayerRef.current = blocks
+
+    const restyleOnZoom = () => {
+      blocks.setStyle((feature: any) =>
+        blockStyle(
+          feature,
+          selectedIdRef.current,
+          completionRef.current,
+          myBlocksRef.current,
+          map.getZoom(),
+        ),
+      )
+    }
+    map.on('zoomend', restyleOnZoom)
 
     // Submission dots — also filtered to this neighborhood so we never show
     // points from an adjacent hood that happened to be in the viewport.
@@ -471,7 +500,13 @@ export default function PittsburghMap({ selectedId, onSelect, onExitDetail, find
         refLat: PITTSBURGH_CENTER[0],
       })
       blocks.setStyle?.((f: any) =>
-        blockStyle(f, selectedIdRef.current, completionRef.current, myBlocksRef.current),
+        blockStyle(
+          f,
+          selectedIdRef.current,
+          completionRef.current,
+          myBlocksRef.current,
+          map.getZoom(),
+        ),
       )
 
       const pending = pendingLocateRef.current

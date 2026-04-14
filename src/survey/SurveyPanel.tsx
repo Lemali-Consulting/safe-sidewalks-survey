@@ -9,6 +9,21 @@ import type { SubmissionResult } from './submission'
 import { useContactStorage } from './useContactStorage'
 import type { SelectedSegment } from '../map/types'
 
+const REQUIRED_FIELDS: { name: string; label: string }[] = [
+  { name: 'name', label: 'Username' },
+  { name: 'email', label: 'Email' },
+  { name: 'how_much_sidewalk_is_present_on', label: 'How much sidewalk is present' },
+]
+
+function getMissingRequired(a: Answers): string[] {
+  return REQUIRED_FIELDS.filter(({ name }) => {
+    const v = a[name]
+    if (v == null) return true
+    if (Array.isArray(v)) return v.length === 0
+    return String(v).trim().length === 0
+  }).map((f) => f.label)
+}
+
 interface Props {
   segment: SelectedSegment | null
   onDismiss: () => void
@@ -31,6 +46,7 @@ export default function SurveyPanel({
   const [photos, setPhotos] = useState<File[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [status, setStatus] = useState<SubmissionResult | null>(null)
+  const [showMissing, setShowMissing] = useState(false)
 
   // When a new segment is chosen, seed the answers with its attributes +
   // the stored contact info. The user can still edit everything.
@@ -58,8 +74,15 @@ export default function SurveyPanel({
     setAnswers((prev) => ({ ...prev, [name]: value }))
   }
 
+  const missingRequired = getMissingRequired(combined)
+
   async function handleSubmit() {
     if (!segment) return
+    if (missingRequired.length > 0) {
+      setShowMissing(true)
+      return
+    }
+    if (!window.confirm('Submit this assessment?')) return
     setSubmitting(true)
     setStatus(null)
     const result = await submitSurvey(
@@ -111,6 +134,17 @@ export default function SurveyPanel({
             ? 'Dev mode — no data was sent to ArcGIS. Check the browser console for the recorded payload.'
             : 'Thanks! Your assessment has been recorded.'}
         </p>
+        {status.photoError && (
+          <div className="mt-1 w-full max-w-[320px] rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-left text-xs text-amber-800">
+            <p className="font-semibold">
+              Photos couldn't be attached ({status.photosUploaded ?? 0} of{' '}
+              {status.photosTotal ?? 0} uploaded)
+            </p>
+            <p className="mt-1">
+              Your answers were saved, but the photo upload failed: {status.photoError}
+            </p>
+          </div>
+        )}
         <div className="mt-2 flex w-full max-w-[260px] flex-col gap-2">
           {onFindNext && (
             <button
@@ -199,10 +233,20 @@ export default function SurveyPanel({
         {status && !status.ok && (
           <p className="mb-2 text-xs text-rose-600">Error: {status.error}</p>
         )}
+        {showMissing && missingRequired.length > 0 && (
+          <div className="mb-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+            <p className="font-semibold">Please fill in these required fields:</p>
+            <ul className="mt-1 list-disc pl-5">
+              {missingRequired.map((label) => (
+                <li key={label}>{label}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={submitting || !combined.name || !combined.email}
+          disabled={submitting}
           className="w-full rounded-md bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-gray-300"
         >
           {submitting ? 'Submitting…' : mock ? 'Submit (mock)' : 'Submit'}

@@ -161,6 +161,35 @@ describe('submitSurvey (live mode)', () => {
     expect(att2[0]).toMatch(/\/FeatureServer\/0\/9999\/addAttachment$/)
   })
 
+  it('returns ok:true with photoError when applyEdits succeeded but an attachment failed', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            addResults: [{ objectId: 42, globalId: 'g-42', success: true }],
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            addAttachmentResult: { success: false, error: { description: 'file too large' } },
+          }),
+          { status: 200 },
+        ),
+      )
+
+    const photo = new File(['x'], 'a.jpg', { type: 'image/jpeg' })
+    const result = await submitSurvey({ ...input(), photos: [photo] }, { mode: 'live' })
+
+    expect(result.ok).toBe(true)
+    expect(result.objectId).toBe(42)
+    expect(result.photoError).toMatch(/file too large/)
+    expect(result.photosUploaded).toBe(0)
+    expect(result.photosTotal).toBe(1)
+  })
+
   it('surfaces an error if applyEdits returns success:false', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       new Response(
