@@ -13,7 +13,10 @@ export default function App() {
 
   function handleSelect(next: SelectedSegment) {
     setSegment(next)
-    setSheetOpen(true)
+    // On mobile, require explicit confirmation before opening the survey sheet
+    // so mis-taps don't drop the user into a form for the wrong block. The
+    // confirmation bar below lets them verify the highlighted block first.
+    setSheetOpen(false)
   }
 
   function handleSubmitted(result: SubmissionResult) {
@@ -67,7 +70,37 @@ export default function App() {
         />
       </aside>
 
-      {/* Mobile: bottom sheet. Slides up once a segment is selected. */}
+      {/* Mobile: confirmation bar shown after selection, before the sheet opens.
+          Guards against mis-taps since the map view is occluded once the sheet
+          is up — users get a chance to see the highlighted block first. */}
+      {segment && !sheetOpen && (
+        <div className="fixed inset-x-0 bottom-0 z-[1000] border-t border-gray-200 bg-white p-3 shadow-2xl md:hidden">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+            Selected
+          </p>
+          <p className="mb-2 truncate text-sm font-semibold text-gray-900">
+            {segment.streetName ?? 'Unnamed sidewalk'}
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setSegment(null)}
+              className="flex-1 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+            >
+              Pick another
+            </button>
+            <button
+              type="button"
+              onClick={() => setSheetOpen(true)}
+              className="flex-[2] rounded-md bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500"
+            >
+              Survey this block
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile: bottom sheet. Slides up once the user confirms the selection. */}
       <div
         className={`fixed inset-x-0 bottom-0 z-[1000] h-[75vh] rounded-t-2xl border-t border-gray-200 bg-white shadow-2xl transition-transform duration-200 ease-out md:hidden ${
           sheetOpen && segment ? 'translate-y-0' : 'translate-y-full'
